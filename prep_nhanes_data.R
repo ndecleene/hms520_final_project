@@ -24,9 +24,9 @@ raw_vars <- c('RIAGENDR', 'RIDAGEYR', 'RIDRETH3', 'DMDEDUC2', 'DMDMARTZ', 'DMDBO
               'HUQ051', 'INDFMMPI', 'PAD680', 'SMQ020', 'SMQ040', 'WHD010', 'WHD020')
 
 formatted_vars <- c('sex', 'age', 'race_ethnicity', 'education', 'marital_status',
-                    'time_in_us', 'interview_survey_wt', 'exam_survey_wt',
+                    'prop_life_in_us', 'interview_survey_wt', 'exam_survey_wt',
                     'systolic_bp', 'diastolic_bp',
-                    'avg_drinks_per_day', 'bp_hist', 'diagnosed_high_chol',
+                    'num_drinks_per_yr', 'bp_hist', 'diagnosed_high_chol',
                     'diagnosed_diabetes', 'food_security', 'insurance', 'healthcare_util_year',
                     'poverty_index', 'min_sedentary_act', 'smoking_status', 'reported_bmi')
 
@@ -77,7 +77,20 @@ data[DMDBORN4==1, DMDYRUSZ := 0]
 data[, time_in_us := factor(DMDYRUSZ, levels = c(0:4),
                             labels = c('Birth', '< 5 years', '5 years to < 15 years',
                                        '15 years to < 30 years', '>= 30 years'))]
-# TODO: change to proportion of life in U.S. (as a backup, switch to born in US: yes or no)
+
+# use time in US to create an estimate of proportion of life lived in U.S. (to eliminate confounding affect of age in time in US variable)
+data[, lower_prop_life_in_us := ifelse(time_in_us == 'Birth', 1,
+                                 ifelse(time_in_us == '< 5 years', 0/RIDAGEYR,
+                                        ifelse(time_in_us == '5 years to < 15 years', 5/RIDAGEYR,
+                                               ifelse(time_in_us == '15 years to < 30 years', 15/RIDAGEYR,
+                                                      ifelse(time_in_us == '>= 30 years', 30/RIDAGEYR, NA)))))]
+data[, upper_prop_life_in_us := ifelse(time_in_us == 'Birth', 1,
+                                 ifelse(time_in_us == '< 5 years', 5/RIDAGEYR,
+                                        ifelse(time_in_us == '5 years to < 15 years', 15/RIDAGEYR,
+                                               ifelse(time_in_us == '15 years to < 30 years', 30/RIDAGEYR,
+                                                      ifelse(time_in_us == '>= 30 years', 1, NA)))))]
+data[upper_prop_life_in_us > 1, upper_prop_life_in_us := 1]
+data[, prop_life_in_us := (lower_prop_life_in_us + upper_prop_life_in_us)/2]
 
 # Rename age and survey weight variables
 setnames(data, c('RIDAGEYR', 'WTINTPRP', 'WTMECPRP'), 
@@ -126,17 +139,33 @@ avgbp <- function(x, diastolic) {
 # Apply function to generate average SBP and DBP readings
 data[, systolic_bp := avgbp(c(BPXOSY1, BPXOSY2, BPXOSY3), F), by=1:nrow(data)]
 data[, diastolic_bp := avgbp(c(BPXODI1, BPXODI2, BPXODI3), T), by=1:nrow(data)]
-# TODO: clean & improve code of this function
 
 #####################################################################################
 # Data processing: Questionnaire
 #####################################################################################
 
-# Create categories for alcohol consumption
+# Create numeric value of number of days of alcohol consumption in last year
+data[ALQ111 == 2 | ALQ121 == 0, num_days_drank := 0]
+data[ALQ121 == 1, num_days_drank := 365]
+data[ALQ121 == 2, num_days_drank := (5.5/7) * 365]
+data[ALQ121 == 3, num_days_drank := (3.5/7) * 365]
+data[ALQ121 == 4, num_days_drank := (2/7) * 365]
+data[ALQ121 == 5, num_days_drank := (1/7) * 365]
+data[ALQ121 == 6, num_days_drank := 2.5 * 12]
+data[ALQ121 == 7, num_days_drank := 12]
+data[ALQ121 == 8, num_days_drank := (7 + 11)/2]
+data[ALQ121 == 9, num_days_drank := (3 + 6)/2]
+data[ALQ121 == 10, num_days_drank := (1 + 2)/2]
+
+# Create numeric value of average number of drinks per day consumed
 setnames(data, 'ALQ130', 'avg_drinks_per_day')
 data[avg_drinks_per_day %in% c(777, 999), avg_drinks_per_day := NA]
 data[ALQ111 == 2 | ALQ121 == 0, avg_drinks_per_day := 0]
-# TODO: Change into 3 categories to account for frequency (0 = Never, 1-2 = frequent, else = occasional)
+
+# Create categories for alcohol consumption
+data[, num_drinks_per_yr := num_days_drank * avg_drinks_per_day]
+data[, num_drinks_per_yr := as.factor(cut(num_drinks_per_yr, c(0, 1, 30, 300, 5500), 
+                   include.lowest = T))]
 
 # Create categories for high BP history
 data[, bp_hist := ifelse(BPQ020==2, 'Not diagnosed', 
@@ -161,12 +190,11 @@ data[, insurance := ifelse(HIQ011==1, 'Yes',
                            ifelse(HIQ011==2, 'No', NA))]
 
 # Set healthcare utilization categories as as factor to order levels and label
+data[HUQ051 %in% c(5:8), HUQ051 := 4]
 data[, healthcare_util_year := factor(HUQ051, 
-                                      levels = c(0:8),
+                                      levels = c(0:4),
                                       labels = c('None', '1', '2-3',
-                                                 '4-5', '6-7', '8-9',
-                                                 '10-12', '13-15', '16+'))]
-# TODO: Bin codes 4-8 into one category
+                                                 '4-5', '6+'))]
 
 # Set missing codes for minutes of sedentary activity to NA
 data[PAD680 %in% c(7777, 9999), PAD680 := NA]
